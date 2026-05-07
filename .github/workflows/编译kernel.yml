@@ -109,4 +109,6 @@ jobs:
         with:
           name: kernel-packages-v${{ inputs.kernel_version }}
           path: |
-            *.deb Image.gz sm8150-xiaomi-raphael.dtb
+            *.deb
+            Image.gz
+            sm8150-xiaomi-raphael.dtb
