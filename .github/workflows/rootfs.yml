@@ -11,8 +11,7 @@
         默认：“Debian-desktop”
         类型：选择
         选项：
-          - Debian-desktop
-  
+          - Debian-desktop  
           - Ubuntu 桌面
       kernel_version：
         描述：“内核版本号 （从 Release 下载对应版本）”
