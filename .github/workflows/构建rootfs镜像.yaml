@@ -12,9 +12,7 @@ on:
         type: choice
         options:
           - debian-desktop
-          - debian-server
           - ubuntu-desktop
-          - ubuntu-server
       kernel_version:
         description: '内核版本号 (从 Release 下载对应版本)'
         required: true
