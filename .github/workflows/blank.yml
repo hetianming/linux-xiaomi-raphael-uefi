@@ -1,0 +1,171 @@
+name: 桌面系统镜像构建工作流 - Ubuntu24.04 ARM
+on:
+  workflow_dispatch:
+    inputs:
+      system_type:
+        description: "桌面系统类型"
+        required: true
+        default: "Debian-desktop"
+        type: choice
+        options:
+          - Debian-desktop
+          - Ubuntu 桌面
+      kernel_version:
+        description: "内核版本号（从Release下载对应版本）"
+        required: true
+        default: "6.18"
+      desktop_environment:
+        description: "桌面环境"
+        required: true
+        default: "磷酸满"
+        type: choice
+        options:
+          - 磷核
+          - 磷酸满
+          - 光电电话
+
+jobs:
+  构建桌面镜像:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+      packages: write
+    env:
+      BUILD_TIMESTAMP: ${{ format('{0}-{1}', github.run_id, github.run_number) }}
+      SYSTEM_TYPE: ${{ inputs.system_type }}
+      KERNEL_VERSION: ${{ inputs.kernel_version }}
+      DESKTOP_ENV: ${{ inputs.desktop_environment }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装构建依赖工具
+        run: |
+          sudo apt update
+          sudo apt install -y debootstrap p7zip-full
+
+      - name: 打印构建配置参数
+        run: |
+          echo "系统类型：${{ env.SYSTEM_TYPE }}"
+          echo "内核版本：${{ env.KERNEL_VERSION }}"
+          echo "桌面环境：${{ env.DESKTOP_ENV }}"
+
+      - name: 下载内核与驱动deb包
+        id: download-kernel
+        run: |
+          mkdir -p xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}"
+
+          curl -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb "${BASE_URL}/linux-image-xiaomi-raphael.deb"
+          curl -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-headers-xiaomi-raphael.deb "${BASE_URL}/linux-headers-xiaomi-raphael.deb"
+          curl -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/firmware-xiaomi-raphael.deb "${BASE_URL}/firmware-xiaomi-raphael.deb"
+          curl -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/alsa-xiaomi-raphael.deb "${BASE_URL}/alsa-xiaomi-raphael.deb"
+
+          # 校验核心内核包
+          if [ ! -f "xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb" ]; then
+            echo "ERROR: 内核包下载失败，请检查Release版本"
+            exit 1
+          fi
+
+          # 提取deb包内实际内核版本
+          KERNEL_PKG_VERSION=$(dpkg-deb -f xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb Package | sed 's/^linux-image-//')
+          echo "kernel_pkg_version=${KERNEL_PKG_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: 执行桌面镜像构建脚本
+        id: build-image
+        run: |
+          echo "开始构建 ${{ env.SYSTEM_TYPE }} + ${{ env.DESKTOP_ENV }} 桌面镜像"
+          case "${{ env.SYSTEM_TYPE }}" in
+            "Debian-desktop")
+              sudo sh debian-desktop_build.sh "${{ env.DESKTOP_ENV }}" "${{ env.KERNEL_VERSION }}"
+              ;;
+            "Ubuntu 桌面")
+              sudo sh ubuntu-desktop_build.sh "${{ env.DESKTOP_ENV }}" "${{ env.KERNEL_VERSION }}"
+              ;;
+            *)
+              echo "未知系统类型"
+              exit 1
+              ;;
+          esac
+
+          # 获取rootfs镜像UUID
+          if [ -f "rootfs.img" ]; then
+            ROOTFS_UUID=$(sudo blkid -s UUID -o value rootfs.img)
+            echo "rootfs_uuid=${ROOTFS_UUID}" >> $GITHUB_OUTPUT
+          else
+            echo "rootfs_uuid=未知" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 获取系统与构建信息
+        id: build-info
+        run: |
+          TIMESTAMP=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+          echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
+
+          case "${{ env.SYSTEM_TYPE }}" in
+            "Debian-desktop")
+              OS_NAME="Debian"
+              OS_VERSION="trixie"
+              ;;
+            "Ubuntu 桌面")
+              OS_NAME="Ubuntu"
+              OS_VERSION="noble"
+              ;;
+          esac
+          echo "os_name=${OS_NAME}" >> $GITHUB_OUTPUT
+          echo "os_version=${OS_VERSION}" >> $GITHUB_OUTPUT
+          echo "system_category=桌面" >> $GITHUB_OUTPUT
+
+      - name: 生成Release标签与名称
+        id: release-info
+        run: |
+          TAG="${{ env.SYSTEM_TYPE }}-v${{ env.KERNEL_VERSION }}-${{ env.DESKTOP_ENV }}"
+          echo "tag_name=${TAG}" >> $GITHUB_OUTPUT
+          RELEASE_NAME="${{ steps.build-info.outputs.os_name }} 桌面镜像 v${{ env.KERNEL_VERSION }} (${{ env.DESKTOP_ENV }})"
+          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: 生成Release介绍文案
+        id: release-desc
+        run: |
+          DESCRIPTION="小米 Raphael 设备 ${{ steps.build-info.outputs.os_name }} 桌面镜像\n"
+          DESCRIPTION+="- 系统版本：${{ steps.build-info.outputs.os_name }} ${{ steps.build-info.outputs.os_version }}\n"
+          DESCRIPTION+="- 内核版本：${{ steps.download-kernel.outputs.kernel_pkg_version }}\n"
+          DESCRIPTION+="- 桌面环境：${{ env.DESKTOP_ENV }}\n"
+          DESCRIPTION+="- 镜像UUID：${{ steps.build-image.outputs.rootfs_uuid }}\n"
+          DESCRIPTION+="- 构建时间：${{ steps.build-info.outputs.timestamp }}\n"
+          DESCRIPTION+="- 构建ID：${{ env.BUILD_TIMESTAMP }}\n\n"
+          DESCRIPTION+="镜像说明：\n"
+          DESCRIPTION+="- 预配置图形桌面环境${{ env.DESKTOP_ENV }}\n"
+          DESCRIPTION+="- 预装ALSA音频驱动、设备固件\n"
+          DESCRIPTION+="- 内置SSH远程连接服务\n"
+          DESCRIPTION+="- 预设中文本地化语言环境\n"
+
+          echo "description<<EOF" >> $GITHUB_OUTPUT
+          echo -e "${DESCRIPTION}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: 创建Release并上传7z镜像包
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release-info.outputs.tag_name }}
+          name: ${{ steps.release-info.outputs.release_name }}
+          body: ${{ steps.release-desc.outputs.description }}
+          draft: false
+          prerelease: false
+          files: rootfs.7z
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 上传工作流制品备份
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.SYSTEM_TYPE }}-${{ env.DESKTOP_ENV }}-v${{ env.KERNEL_VERSION }}
+          path: rootfs.7z
+
+      - name: 全局清理临时文件
+        if: always()
+        run: |
+          sudo rm -f rootfs.img rootfs.7z 2>/dev/null || true
+          sudo rm -rf rootdir 2>/dev/null || true
+          rm -rf xiaomi-raphael-debs_* 2>/dev/null || true
