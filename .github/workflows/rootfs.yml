@@ -1,0 +1,268 @@
+# 统一的系统镜像构建工作流 - 在 Ubuntu 24.04 ARM 上运行
+名称：构建系统镜像
+
+# 手动触发，可指定所有参数
+关于：
+  workflow_dispatch：
+    输入：
+      system_type：
+        描述：“系统类型”
+        必备：真
+        默认：“Debian-desktop”
+        类型：选择
+        选项：
+          - Debian-desktop
+  
+          - Ubuntu 桌面
+      kernel_version：
+        描述：“内核版本号 （从 Release 下载对应版本）”
+        必备：真
+        默认值：“6.18”
+      desktop_environment：
+        描述：“桌面环境（仅适用于Desktop版本）”
+        要求：错误
+        默认：''
+        类型：选择
+        选项：
+          - ''
+          - 磷核
+          - 磷酸满
+          - 光电电话
+
+# 工作流配置
+职位：
+  构建系统镜像：
+    # 在 Ubuntu 24.04 ARM 上运行
+    runs-on： ubuntu-24.04-arm
+    
+    # 设置权限，允许创建 发布
+    许可：
+      目录：write # 允许创建 Release 和上传文件
+      packages： write # 允许上传包（如果需要）
+    
+    # 定义环境变量
+    环境：
+      BUILD_TIMESTAMP： ${{ format（'{0}'， github.run_id） }}-${{ github.run_number }}
+      SYSTEM_TYPE： ${{ inputs.system_type }}
+      KERNEL_VERSION：${{ inputs.kernel_version }}
+      DESKTOP_ENV： ${{ inputs.desktop_environment ||“磷酸满满”}}
+    
+    步骤：
+      # 检出代码
+      - 名称：检出代码
+        用途：行动/checkout@v4
+    
+      # 安装debootstrap和7z
+      - 名称：安装构建工具
+        运行：|
+Sudo APT更新
+sudo apt install -y debootstrap
+      
+      # 验证参数
+      - 名称：验证构建参数
+        运行：|
+echo “构建配置：”
+echo “系统类型： ${{ env.SYSTEM_TYPE }}”
+echo “内核版本： ${{ env.KERNEL_VERSION }}”
+echo “桌面环境： ${{ env.DESKTOP_ENV }}”
+          
+# 检查Desktop版本是否提供了桌面环境参数
+如果 [[ “${{ 环境SYSTEM_TYPE }}“ == *”desktop“* && -z ”${{ inputs.desktop_environment }}“ ]];则
+echo “错误： Desktop版本必须指定桌面环境参数”
+出口1
+Fi
+      
+      # 从 GitHub Release 下载内核包
+      - 名称：下载内核编译产物
+        ID：下载内核
+        运行：|
+# 从 Release 下载指定版本的内核包
+MKDIR -P Xiaomi-Raphael-debs_${{ env.KERNEL_VERSION }}
+          
+echo “正在下载内核包 （版本： ${{ env.KERNEL_VERSION }}）...”
+          
+# 下载通用内核包
+卷发 -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb \
+“https://github.com/${{ GitHub.repository }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb” ||echo “下载 linux-image-xiaomi-raphael.deb 失败，可能 Release 不存在”
+          
+curl -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/linux-headers-xiaomi-raphael.deb \
+“https://github.com/${{ GitHub.repository }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/linux-headers-xiaomi-raphael.deb“ ||echo “下载 linux-headers-xiaomi-raphael.deb 失败，可能 Release 不存在”
+          
+curl -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/firmware-xiaomi-raphael.deb \
+“https://github.com/${{ GitHub.repository }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/firmware-xiaomi-raphael.deb“ ||echo “下载 firmware-xiaomi-raphael.deb 失败，可能 Release 不存在”
+          
+# Desktop版本需要额外的alsa包
+如果 [[ “${{ 环境SYSTEM_TYPE }}“ == *”desktop“* ]];则
+curl -L -o xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/alsa-xiaomi-raphael.deb \
+“https://github.com/${{ GitHub.repository }}/releases/download/kernel-v${{ env.KERNEL_VERSION }}/alsa-xiaomi-raphael.deb“ ||echo “下载 alsa-xiaomi-raphael.deb 失败，可能 Release 不存在”
+Fi
+          
+# 检查是否下载成功
+echo “下载的内核包列表：”
+ls -la xiaomi-raphael-debs_${{ env.KERNEL_VERSION }}/ ||echo “目录为空”
+          
+# 检查必要文件是否存在
+如果 [ ！ -f “小米-拉斐尔-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb“ ];则
+echo “错误： 必要的内核包未下载成功”
+出口1
+Fi
+          
+# 提取内核包中的实际内核版本
+KERNEL_PKG_VERSION=$（DPKG-deb -f Xiaomi-Raphael-debs_${{ env.KERNEL_VERSION }}/linux-image-xiaomi-raphael.deb Package |sed 's/linux-image-//'）
+echo “提取的内核包版本： $KERNEL_PKG_VERSION”
+echo “kernel_pkg_version=$KERNEL_PKG_VERSION” >> $GITHUB_输出
+      
+      # 根据系统类型选择构建脚本
+      - 名称：构建系统镜像
+        ID：build-image
+        运行：|
+echo “开始构建 ${{ env.SYSTEM_TYPE }} 镜像......”
+          
+# 根据系统类型执行对应的构建脚本
+案例“${{ 环境。SYSTEM_TYPE }}”
+“Debian-desktop”）
+Sudo SH debian-desktop_build.sh “${{ env.DESKTOP_ENV }}“ ”${{ env.KERNEL_VERSION }}”
+              ;;
+“debian-server”）
+sudo sh debian-server_build.sh “${{ env.KERNEL_VERSION }}”
+              ;;
+“ubuntu-desktop”）
+sudo sh ubuntu-desktop_build.sh “${{ env.DESKTOP_ENV }}“ ”${{ env.KERNEL_VERSION }}”
+              ;;
+“ubuntu-server”）
+sudo sh ubuntu-server_build.sh “${{ env.KERNEL_VERSION }}”
+              ;;
+            *)
+echo “错误： 未知的系统类型： ${{ env.SYSTEM_TYPE }}”
+出口1
+              ;;
+欧洲事务特别委员会
+          
+Echo “镜像构建完成！”
+          
+# 获取rootfs.img的UUID
+如果 [ -f “rootfs.img” ];则
+ROOTFS_UUID=$（sudo blkid -s UUID -o value rootfs.img）
+echo “rootfs.img UUID： $ROOTFS_UUID”
+回声 “rootfs_uuid=$ROOTFS_UUID” >> $GITHUB_输出
+否则
+echo “警告： rootfs.img 文件不存在”
+回声 “rootfs_uuid=未知” >> $GITHUB_输出
+Fi
+      
+      # 获取构建信息
+      - 名称：获取构建信息
+        ID：构建信息
+        运行：|
+# 获取时间戳
+TIMESTAMP=$（TZ='Asia/Shanghai' 日期 +'%Y-%m-%d %H：%M：%S'）
+回声 “时间戳=$TIMESTAMP” >> $GITHUB_输出
+          
+# 获取系统版本信息
+案例“${{ 环境。SYSTEM_TYPE }}”
+“debian-desktop”|”Debian服务器“）
+OS_NAME=“Debian”
+OS_VERSION=“trixie”
+              ;;
+“Ubuntu-desktop”|”Ubuntu 服务器“）
+OS_NAME=“Ubuntu”
+OS_VERSION=“高贵”
+              ;;
+欧洲事务特别委员会
+回声 “os_name=$OS_NAME” >> $GITHUB_输出
+回声 “os_version=$OS_VERSION” >> $GITHUB_OUTPUT
+          
+# 确定系统类别
+如果 [[ “${{ 环境SYSTEM_TYPE }}“ == *”desktop“* ]];则
+SYSTEM_CATEGORY=“桌面”
+否则
+SYSTEM_CATEGORY=“服务器”
+Fi
+echo “system_category=$SYSTEM_CATEGORY” >> $GITHUB_OUTPUT
+      
+      # 生成Release标签和名称
+      - 名称：生成Release信息
+        ID：发布信息
+        运行：|
+# 生成Release标签
+TAG=“${{ env.SYSTEM_TYPE }}-v${{ env.KERNEL_VERSION }}”
+如果 [[ “${{ 环境SYSTEM_TYPE }}“ == *”desktop“* ]];则
+TAG=“${TAG}-${{ env.DESKTOP_ENV }}”
+Fi
+回声 “tag_name=$TAG” >> $GITHUB_输出
+          
+# 生成Release名称
+RELEASE_NAME=“${{ steps.build-info.outputs.os_name }} ${{ steps.build-info.outputs.system_category }} 镜像 v${{ env.KERNEL_VERSION }}”
+如果 [[ “${{ 环境SYSTEM_TYPE }}“ == *”desktop“* ]];则
+RELEASE_NAME=“${RELEASE_NAME} （${{ env.DESKTOP_ENV }}）”
+Fi
+echo “release_name=$RELEASE_NAME” >> $GITHUB_OUTPUT
+      
+      # 生成Release描述
+      - name： 生成Release描述
+        ID：释放-描述
+        运行：|
+# 构建描述内容
+DESCRIPTION=“小米 Raphael 设备 ${{ steps.build-info.outputs.os_name }} ${{ steps.build-info.outputs.system_category }} 镜像\n”
+DESCRIPTION=“${DESCRIPTION}- 系统版本： ${{ steps.build-info.outputs.os_name }} ${{ steps.build-info.outputs.os_version }}\n”
+DESCRIPTION=“${DESCRIPTION}- 内核版本： ${{ steps.download-kernel.outputs.kernel_pkg_version }}\n”
+DESCRIPTION=“${DESCRIPTION}- 系统镜像UUID： ${{ steps.build-image.outputs.rootfs_uuid }}\n”
+          
+如果 [[ “${{ 环境SYSTEM_TYPE }}“ == *”desktop“* ]];则
+DESCRIPTION=“${DESCRIPTION}- 桌面环境： ${{ env.DESKTOP_ENV }}\n”
+Fi
+          
+DESCRIPTION=“${DESCRIPTION}- 构建时间： ${{ steps.build-info.outputs.timestamp }}\n”
+DESCRIPTION=“${DESCRIPTION}- 构建 ID： ${{ env.BUILD_TIMESTAMP }}\n\n”
+          
+# 添加特定说明
+如果 [[ “${{ 环境SYSTEM_TYPE }}“ == *”服务器“* ]];则
+DESCRIPTION=“${DESCRIPTION}说明：\n”
+DESCRIPTION=“${DESCRIPTION}- 这是一个无图形界面的服务器版本\n”
+DESCRIPTION=“${DESCRIPTION}- 包含基础网络管理工具\n”
+DESCRIPTION=“${DESCRIPTION}- 已安装 SSH 服务器\n”
+DESCRIPTION=“${DESCRIPTION}- 已安装中文语言支持\n”
+DESCRIPTION=“${DESCRIPTION}- 包含必要的设备驱动和固件\n”
+否则
+DESCRIPTION=“${DESCRIPTION}说明：\n”
+DESCRIPTION=“${DESCRIPTION}- 这是一个带有图形界面的桌面版本\n”
+DESCRIPTION=“${DESCRIPTION}- 包含 ${{ env.DESKTOP_ENV }} 桌面环境\n”
+DESCRIPTION=“${DESCRIPTION}- 已安装 SSH 服务器\n”
+DESCRIPTION=“${DESCRIPTION}- 已安装中文语言支持\n”
+DESCRIPTION=“${DESCRIPTION}- 包含必要的设备驱动和固件\n”
+Fi
+          
+echo “description<<EOF” >> $GITHUB_OUTPUT
+echo -e “$DESCRIPTION” >> $GITHUB_OUTPUT
+echo “EOF” >> $GITHUB_OUTPUT
+      
+      # 创建 GitHub Release 并上传镜像
+      - 名称：创建 Release 并上传镜像
+        用途：软道具/动作-GH-release@v1
+        与：
+          tag_name： ${{ steps.release-info.outputs.tag_name }}
+          姓名：${{ steps.release-info.outputs.release_name }}
+          正文：${{ steps.release-desc.outputs.description }}
+          选秀：虚假
+          预发布：False
+          文件：|
+rootfs.7z
+        环境：
+          GITHUB_TOKEN：${{ 秘密。GITHUB_TOKEN }}
+      
+      # 上传镜像作为工作流制品
+      - 名称：上传镜像作为工作流制品
+        用途：动作/上传-artifact@v4
+        与：
+          名称：${{ env.SYSTEM_TYPE }}-image-v${{ env.KERNEL_VERSION }}
+          路径：|
+rootfs.7z
+      
+      # 清理临时文件
+      - 名称：清理临时文件
+        如果：总是（）
+        运行：|
+echo “清理临时文件......”
+sudo rm -f rootfs.img rootfs.7z 2>/dev/null ||确实如此
+sudo rm -rf rootdir 2>/dev/null ||确实如此
+rm -rf xiaomi-raphael-debs_* 2>/dev/null ||确实如此
